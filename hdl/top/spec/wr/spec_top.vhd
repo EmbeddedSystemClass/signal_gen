@@ -192,13 +192,35 @@ entity spec_top is
       -- UART
       -----------------------------------------
 
-      uart_rxd_i : in  std_logic := '1';
+      uart_rxd_i : in  std_logic;
       uart_txd_o : out std_logic
       );
 
 end spec_top;
 
 architecture rtl of spec_top is
+
+component chipscope_ila
+    port (
+      CONTROL : inout std_logic_vector(35 downto 0);
+      CLK     : in    std_logic;
+      TRIG0   : in    std_logic_vector(31 downto 0);
+      TRIG1   : in    std_logic_vector(31 downto 0);
+      TRIG2   : in    std_logic_vector(31 downto 0);
+      TRIG3   : in    std_logic_vector(31 downto 0));
+  end component;
+
+  component chipscope_icon
+    port (
+      CONTROL0 : inout std_logic_vector (35 downto 0));
+  end component;
+
+  signal CONTROL : std_logic_vector(35 downto 0);
+  signal CLK     : std_logic;
+  signal TRIG0   : std_logic_vector(31 downto 0);
+  signal TRIG1   : std_logic_vector(31 downto 0);
+  signal TRIG2   : std_logic_vector(31 downto 0);
+  signal TRIG3   : std_logic_vector(31 downto 0);
 
 
   component spec_serial_dac_arb
@@ -260,10 +282,11 @@ architecture rtl of spec_top is
   end f_int2bool;
 
   constant c_NUM_WB_MASTERS : integer := 3;
-  constant c_NUM_WB_SLAVES  : integer := 2;
+  constant c_NUM_WB_SLAVES  : integer := 4;
 
   constant c_MASTER_GENNUM    : integer := 0;
   constant c_MASTER_ETHERBONE : integer := 1;
+  constant c_MASTER_LM32		: integer := 2; ---has two
 
   constant c_SLAVE_FD       : integer := 0;
   constant c_SLAVE_WRCORE   : integer := 1;
@@ -272,6 +295,8 @@ architecture rtl of spec_top is
   constant c_DESC_REPO_URL  : integer := 4;
 
   constant c_WRCORE_BRIDGE_SDB : t_sdb_bridge := f_xwb_bridge_manual_sdb(x"0003ffff", x"00030000");
+	 
+  constant init_lm32_addr : t_wishbone_address := x"000c0000";
 
   constant c_INTERCONNECT_LAYOUT : t_sdb_record_array(c_NUM_WB_MASTERS+1 downto 0) :=
     (c_SLAVE_WRCORE   => f_sdb_embed_bridge(c_WRCORE_BRIDGE_SDB, x"000c0000"),
@@ -284,6 +309,11 @@ architecture rtl of spec_top is
 
   constant c_VIC_VECTOR_TABLE : t_wishbone_address_array(0 to 0) :=
     (0 => x"00080000");
+
+
+  signal lm32_irq_slv : std_logic_vector(31 downto 0);
+
+
 
   signal pllout_clk_sys       : std_logic;
   signal pllout_clk_dmtd      : std_logic;
@@ -475,6 +505,23 @@ begin
     port map (
       O => clk_20m_vcxo_buf,
       I => clk_20m_vcxo_i);
+-----------------------------------------------------------------------------
+-- LM32
+-----------------------------------------------------------------------------  
+  LM32_CORE : xwb_lm32
+    generic map(
+		g_profile => "medium_icache_debug",
+		g_reset_vector=> init_lm32_addr)
+    port map(
+      clk_sys_i => clk_sys,
+		rst_n_i   => local_reset_n,
+      irq_i     => lm32_irq_slv,
+
+      dwb_o => cnx_slave_in(c_MASTER_LM32),
+      dwb_i => cnx_slave_out(c_MASTER_LM32),
+      iwb_o => cnx_slave_in(c_MASTER_LM32+1),
+      iwb_i => cnx_slave_out(c_MASTER_LM32+1)
+      );
 
 -------------------------------------------------------------------------------
 -- Gennum core
@@ -610,6 +657,20 @@ begin
 
   carrier_onewire_b <= '0' when wrc_owr_en(0) = '1' else 'Z';
   wrc_owr_in(0)     <= carrier_onewire_b;
+  
+  
+  chipscope_ila_1 : chipscope_ila
+    port map (
+      CONTROL => CONTROL,
+      CLK     => clk_sys,
+      TRIG0   => TRIG0,
+      TRIG1   => TRIG1,
+      TRIG2   => TRIG2,
+      TRIG3   => TRIG3);
+
+  chipscope_icon_1 : chipscope_icon
+    port map (
+      CONTROL0 => CONTROL);
 
   U_WR_CORE : xwr_core
     generic map (
@@ -625,6 +686,7 @@ begin
       g_address_granularity       => BYTE,
       g_softpll_enable_debugger   => false)
     port map (
+		irq_out 		 => lm32_irq_slv,
       clk_sys_i    => clk_sys,
       clk_dmtd_i   => clk_dmtd,
       clk_ref_i    => clk_125m_pllref,
