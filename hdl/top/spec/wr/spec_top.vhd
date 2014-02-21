@@ -281,39 +281,58 @@ component chipscope_ila
     end if;
   end f_int2bool;
 
-  constant c_NUM_WB_MASTERS : integer := 3;
+  constant c_NUM_WB_MASTERS : integer := 4;
   constant c_NUM_WB_SLAVES  : integer := 4;
 
   constant c_MASTER_GENNUM    : integer := 0;
   constant c_MASTER_ETHERBONE : integer := 1;
-  constant c_MASTER_LM32		: integer := 2; ---has two
+  constant c_MASTER_LM32      : integer := 2; ---has two
 
   constant c_SLAVE_FD       : integer := 0;
   constant c_SLAVE_WRCORE   : integer := 1;
   constant c_SLAVE_VIC      : integer := 2;
-  constant c_DESC_SYNTHESIS : integer := 3;
-  constant c_DESC_REPO_URL  : integer := 4;
+  constant c_SLAVE_UART		 : integer := 3;
+  constant c_DESC_SYNTHESIS : integer := 4;
+  constant c_DESC_REPO_URL  : integer := 5;
 
   constant c_WRCORE_BRIDGE_SDB : t_sdb_bridge := f_xwb_bridge_manual_sdb(x"0003ffff", x"00030000");
 	 
   constant init_lm32_addr : t_wishbone_address := x"000c0000";
 
+  
+  constant c_wrc_periph_uart_sdb : t_sdb_device := (
+    abi_class     => x"0000",              -- undocumented device
+    abi_ver_major => x"01",
+    abi_ver_minor => x"01",
+    wbd_endian    => c_sdb_endian_big,
+    wbd_width     => x"7",                 -- 8/16/32-bit port granularity
+    sdb_component => (
+      addr_first  => x"0000000000000000",
+      addr_last   => x"00000000000000ff",
+      product     => (
+        vendor_id => x"000000000000CE42",  -- CERN
+        device_id => x"e2d13d04",
+        version   => x"00000001",
+        date      => x"20120305",
+        name      => "UART               "))); 
+
+
   constant c_INTERCONNECT_LAYOUT : t_sdb_record_array(c_NUM_WB_MASTERS+1 downto 0) :=
     (c_SLAVE_WRCORE   => f_sdb_embed_bridge(c_WRCORE_BRIDGE_SDB, x"000c0000"),
      c_SLAVE_FD       => f_sdb_embed_device(c_FD_SDB_DEVICE, x"00080000"),
      c_SLAVE_VIC      => f_sdb_embed_device(c_xwb_vic_sdb, x"00090000"),
+	  c_SLAVE_UART	    => f_sdb_embed_device(c_wrc_periph_uart_sdb, x"00060000"), -- UART
      c_DESC_SYNTHESIS => f_sdb_embed_synthesis(c_sdb_synthesis_info),
-     c_DESC_REPO_URL  => f_sdb_embed_repo_url(c_sdb_repo_url));
+     c_DESC_REPO_URL  => f_sdb_embed_repo_url(c_sdb_repo_url));  
 
   constant c_SDB_ADDRESS : t_wishbone_address := x"00000000";
 
   constant c_VIC_VECTOR_TABLE : t_wishbone_address_array(0 to 0) :=
     (0 => x"00080000");
 
-
   signal lm32_irq_slv : std_logic_vector(31 downto 0);
-
-
+  
+  signal uart_dummy_i : std_logic;
 
   signal pllout_clk_sys       : std_logic;
   signal pllout_clk_dmtd      : std_logic;
@@ -389,13 +408,88 @@ component chipscope_ila
   signal etherbone_cfg_out : t_wishbone_slave_out;
 
   signal vic_irqs : std_logic_vector(31 downto 0);
+  
+  
+  signal periph_slave_i : t_wishbone_slave_in_array(0 to 2);
+  signal periph_slave_o : t_wishbone_slave_out_array(0 to 2);
+  signal periph_dummy	: std_logic_vector (9 downto 0);
+  signal wrpc_dummy		: std_logic_vector (2 downto 0);
+
 
   attribute buffer_type                    : string;  --" {bufgdll | ibufg | bufgp | ibuf | bufr | none}";
   attribute buffer_type of clk_125m_pllref : signal is "BUFG";
 
 begin
 
-  U_Reset_Generator : spec_reset_gen
+-- -----------------------------------------------------------------------------
+--  -- WB Peripherials
+-- -----------------------------------------------------------------------------
+  PERIPH : wrc_periph
+    generic map(
+      g_phys_uart    => true,
+      g_virtual_uart => false,
+      g_mem_words    => 0)
+    port map(
+      clk_sys_i   => clk_sys,
+      rst_n_i     => local_reset_n,
+      rst_net_n_o => open,
+      rst_wrc_n_o => open,
+
+      led_red_o   => open,              --led_red_o,
+      led_green_o => open,              --led_green_o,
+      scl_o       => open,
+      scl_i       => periph_dummy(0),
+      sda_o       => open,
+      sda_i       => periph_dummy(1),
+      sfp_scl_o   => open,
+      sfp_scl_i   => periph_dummy(2),
+      sfp_sda_o   => periph_dummy(3),
+      sfp_sda_i   => periph_dummy(4),
+      sfp_det_i   => periph_dummy(5),
+      memsize_i   => "0000",
+      btn1_i      => periph_dummy(6),
+      btn2_i      => periph_dummy(7),
+
+      slave_i => periph_slave_i,
+      slave_o => periph_slave_o,
+
+      uart_rxd_i => uart_rxd_i,
+      uart_txd_o => uart_txd_o,
+
+      owr_pwren_o => open,
+      owr_en_o    => open,
+      owr_i       => periph_dummy(9 downto 8)
+      );
+--  
+  periph_slave_i(1) <= cnx_master_out(c_SLAVE_UART);
+  cnx_master_in(c_SLAVE_UART) <= periph_slave_o(1);
+  trig2 <= cnx_master_out(c_SLAVE_UART).adr;
+  trig3 <=  cnx_master_in(c_SLAVE_UART).dat;
+
+  --------------------------------------
+  -- UART
+  --------------------------------------
+--  UART : xwb_simple_uart
+--    generic map(
+--      g_with_virtual_uart   => true,
+--      g_with_physical_uart  => false,
+--      g_interface_mode      => PIPELINED,
+--      g_address_granularity => BYTE
+--      )
+--    port map(
+--      clk_sys_i => clk_sys,
+--      rst_n_i   => local_reset_n,
+--
+--      -- Wishbone
+--      slave_i => cnx_master_out(c_SLAVE_UART),
+--      slave_o => cnx_master_in(c_SLAVE_UART),
+--      desc_o  => open,
+--
+--      uart_rxd_i => uart_rxd_i,
+--      uart_txd_o => uart_txd_o
+--      );
+
+ U_Reset_Generator : spec_reset_gen
     port map (
       clk_sys_i        => clk_sys,
       rst_pcie_n_a_i   => l_rst_n,
@@ -514,7 +608,7 @@ begin
 		g_reset_vector=> init_lm32_addr)
     port map(
       clk_sys_i => clk_sys,
-		rst_n_i   => local_reset_n,
+      rst_n_i   => local_reset_n,
       irq_i     => lm32_irq_slv,
 
       dwb_o => cnx_slave_in(c_MASTER_LM32),
@@ -686,7 +780,7 @@ begin
       g_address_granularity       => BYTE,
       g_softpll_enable_debugger   => false)
     port map (
-		irq_out 		 => lm32_irq_slv,
+      irq_out      => lm32_irq_slv,
       clk_sys_i    => clk_sys,
       clk_dmtd_i   => clk_dmtd,
       clk_ref_i    => clk_125m_pllref,
@@ -724,8 +818,11 @@ begin
       sfp_sda_i => sfp_sda_in,
       sfp_det_i => sfp_mod_def0_b,
 
-      uart_rxd_i => uart_rxd_i,
-      uart_txd_o => uart_txd_o,
+--      uart_rxd_i => uart_rxd_i,
+--      uart_txd_o => uart_txd_o,
+		
+		uart_rxd_i => uart_dummy_i,
+      uart_txd_o => open,
 
       owr_en_o => wrc_owr_en,
       owr_i    => wrc_owr_in,
