@@ -49,6 +49,7 @@ use work.wishbone_pkg.all;
 use work.fine_delay_pkg.all;
 use work.etherbone_pkg.all;
 use work.wr_xilinx_pkg.all;
+use work.genram_pkg.all;
 
 use work.synthesis_descriptor.all;
 
@@ -281,7 +282,7 @@ component chipscope_ila
     end if;
   end f_int2bool;
 
-  constant c_NUM_WB_MASTERS : integer := 4;
+  constant c_NUM_WB_MASTERS : integer := 5;
   constant c_NUM_WB_SLAVES  : integer := 4;
 
   constant c_MASTER_GENNUM    : integer := 0;
@@ -291,14 +292,17 @@ component chipscope_ila
   constant c_SLAVE_FD       : integer := 0;
   constant c_SLAVE_WRCORE   : integer := 1;
   constant c_SLAVE_VIC      : integer := 2;
-  constant c_SLAVE_UART		 : integer := 3;
-  constant c_DESC_SYNTHESIS : integer := 4;
-  constant c_DESC_REPO_URL  : integer := 5;
+  constant c_SLAVE_DPRAM	 : integer := 3;
+  constant c_SLAVE_UART		 : integer := 4;
+  constant c_DESC_SYNTHESIS : integer := 5;
+  constant c_DESC_REPO_URL  : integer := 6;
 
   constant c_WRCORE_BRIDGE_SDB : t_sdb_bridge := f_xwb_bridge_manual_sdb(x"0003ffff", x"00030000");
 	 
-  constant init_lm32_addr : t_wishbone_address := x"000c0000";
+  constant init_lm32_addr : t_wishbone_address := x"00040000";
 
+  constant g_dpram_size				: integer	:= 114688/4;  --in 32-bit words
+  constant c_mnic_memsize_log2 	: integer	:= f_log2_size(g_dpram_size);
   
   constant c_wrc_periph_uart_sdb : t_sdb_device := (
     abi_class     => x"0000",              -- undocumented device
@@ -311,16 +315,16 @@ component chipscope_ila
       addr_last   => x"00000000000000ff",
       product     => (
         vendor_id => x"000000000000CE42",  -- CERN
-        device_id => x"e2d13d04",
+        device_id => x"dead0fee",
         version   => x"00000001",
         date      => x"20120305",
         name      => "UART               "))); 
-
 
   constant c_INTERCONNECT_LAYOUT : t_sdb_record_array(c_NUM_WB_MASTERS+1 downto 0) :=
     (c_SLAVE_WRCORE   => f_sdb_embed_bridge(c_WRCORE_BRIDGE_SDB, x"000c0000"),
      c_SLAVE_FD       => f_sdb_embed_device(c_FD_SDB_DEVICE, x"00080000"),
      c_SLAVE_VIC      => f_sdb_embed_device(c_xwb_vic_sdb, x"00090000"),
+	  c_SLAVE_DPRAM	 => f_sdb_embed_device(f_xwb_dpram(g_dpram_size), init_lm32_addr),
 	  c_SLAVE_UART	    => f_sdb_embed_device(c_wrc_periph_uart_sdb, x"00060000"), -- UART
      c_DESC_SYNTHESIS => f_sdb_embed_synthesis(c_sdb_synthesis_info),
      c_DESC_REPO_URL  => f_sdb_embed_repo_url(c_sdb_repo_url));  
@@ -329,8 +333,6 @@ component chipscope_ila
 
   constant c_VIC_VECTOR_TABLE : t_wishbone_address_array(0 to 0) :=
     (0 => x"00080000");
-
-  signal lm32_irq_slv : std_logic_vector(31 downto 0);
   
   signal uart_dummy_i : std_logic;
 
@@ -409,18 +411,40 @@ component chipscope_ila
 
   signal vic_irqs : std_logic_vector(31 downto 0);
   
+   
+  signal dpram_wbb_i : t_wishbone_slave_in;
+  signal dpram_wbb_o : t_wishbone_slave_out;
   
   signal periph_slave_i : t_wishbone_slave_in_array(0 to 2);
   signal periph_slave_o : t_wishbone_slave_out_array(0 to 2);
   signal periph_dummy	: std_logic_vector (9 downto 0);
   signal wrpc_dummy		: std_logic_vector (2 downto 0);
-
+  signal forced_lm32_reset_n : std_logic;
+  signal state_control : std_logic_vector (2 downto 0) := "000";
 
   attribute buffer_type                    : string;  --" {bufgdll | ibufg | bufgp | ibuf | bufr | none}";
   attribute buffer_type of clk_125m_pllref : signal is "BUFG";
 
 begin
 
+LED_RED <= forced_lm32_reset_n;
+
+manage_reset : process (clk_sys)
+	begin 
+		if (rising_edge(clk_sys)) then
+			state_control(0) <= not BUTTON2_I;
+			state_control(1) <=  state_control(0);
+			state_control(2) <=  state_control(1);
+			if ( (state_control(0) or state_control(1) or state_control(2)) = '1') then
+				forced_lm32_reset_n <= not forced_lm32_reset_n;
+			end if;
+		end if;
+	end process;
+	
+--trig0(0)				<= clk_sys;
+--trig0(1) 			<= BUTTON2_I;
+--trig0(4 downto 2) <= state_control; 
+--trig0(5)				<= forced_lm32_reset_n;
 -- -----------------------------------------------------------------------------
 --  -- WB Peripherials
 -- -----------------------------------------------------------------------------
@@ -608,15 +632,42 @@ begin
 		g_reset_vector=> init_lm32_addr)
     port map(
       clk_sys_i => clk_sys,
-      rst_n_i   => local_reset_n,
-      irq_i     => lm32_irq_slv,
+      rst_n_i   => forced_lm32_reset_n,
+      irq_i     => (others=> '0'),
 
       dwb_o => cnx_slave_in(c_MASTER_LM32),
       dwb_i => cnx_slave_out(c_MASTER_LM32),
       iwb_o => cnx_slave_in(c_MASTER_LM32+1),
       iwb_i => cnx_slave_out(c_MASTER_LM32+1)
       );
+		--trig0 <= cnx_slave_in(c_MASTER_LM32+1).adr;
+		--trig2 <= cnx_master_out(c_SLAVE_FD).adr;
+--		trig1(0) <= cnx_master_in(c_SLAVE_DPRAM).ack;
+--		trig1(1) <= cnx_master_out(c_SLAVE_DPRAM).we; 
+		trig1 <= cnx_slave_in(c_MASTER_LM32).dat;
+		--trig3 <= cnx_master_out(c_SLAVE_FD).dat;
+--		trig3 <= cnx_slave_out(c_MASTER_LM32).dat;
+---------------------------------------------------------------------------
+-- Dual-port RAM
+-----------------------------------------------------------------------------  
+  DPRAM : xwb_dpram
+    generic map(
+      g_size                  => g_dpram_size,  --in 32-bit words
+      g_init_file             => "uart.ram",
+      g_must_have_init_file   => true,  --> OJO <--
+      g_slave1_interface_mode => PIPELINED,
+      g_slave2_interface_mode => PIPELINED,
+      g_slave1_granularity    => BYTE,
+      g_slave2_granularity    => WORD)  
+    port map(
+      clk_sys_i => clk_sys,
+      rst_n_i   => local_reset_n,
 
+      slave1_i => cnx_master_out(c_SLAVE_DPRAM),
+      slave1_o => cnx_master_in(c_SLAVE_DPRAM),
+      slave2_i => dpram_wbb_i,
+      slave2_o => dpram_wbb_o
+      );
 -------------------------------------------------------------------------------
 -- Gennum core
 -------------------------------------------------------------------------------
@@ -780,7 +831,6 @@ begin
       g_address_granularity       => BYTE,
       g_softpll_enable_debugger   => false)
     port map (
-      irq_out      => lm32_irq_slv,
       clk_sys_i    => clk_sys,
       clk_dmtd_i   => clk_dmtd,
       clk_ref_i    => clk_125m_pllref,
@@ -805,7 +855,7 @@ begin
       phy_rst_o          => phy_rst,
       phy_loopen_o       => phy_loopen,
 
-      led_act_o  => LED_RED,
+      led_act_o  => open,
       led_link_o => LED_GREEN,
 
       scl_o     => wrc_scl_out,
@@ -1037,6 +1087,8 @@ begin
       wb_ack_o   => cnx_master_in(c_SLAVE_FD).ack,
       wb_stall_o => cnx_master_in(c_SLAVE_FD).stall,
       wb_irq_o   => fd_irq);
+		
+		--trig0 <= cnx_master_out(c_SLAVE_FD).adr;
 
 -- tristate buffer for the TDC data bus:
   fd_tdc_d_b    <= tdc_data_out when tdc_data_oe = '1' else (others => 'Z');
