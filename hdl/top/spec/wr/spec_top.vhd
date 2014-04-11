@@ -201,27 +201,27 @@ end spec_top;
 
 architecture rtl of spec_top is
 
-component chipscope_ila
-    port (
-      CONTROL : inout std_logic_vector(35 downto 0);
-      CLK     : in    std_logic;
-      TRIG0   : in    std_logic_vector(31 downto 0);
-      TRIG1   : in    std_logic_vector(31 downto 0);
-      TRIG2   : in    std_logic_vector(31 downto 0);
-      TRIG3   : in    std_logic_vector(31 downto 0));
-  end component;
+--component chipscope_ila
+--    port (
+--      CONTROL : inout std_logic_vector(35 downto 0);
+--      CLK     : in    std_logic;
+--      TRIG0   : in    std_logic_vector(31 downto 0);
+--      TRIG1   : in    std_logic_vector(31 downto 0);
+--      TRIG2   : in    std_logic_vector(31 downto 0);
+--      TRIG3   : in    std_logic_vector(31 downto 0));
+--  end component;
+--
+--  component chipscope_icon
+--    port (
+--      CONTROL0 : inout std_logic_vector (35 downto 0));
+--  end component;
 
-  component chipscope_icon
-    port (
-      CONTROL0 : inout std_logic_vector (35 downto 0));
-  end component;
-
-  signal CONTROL : std_logic_vector(35 downto 0);
-  signal CLK     : std_logic;
-  signal TRIG0   : std_logic_vector(31 downto 0);
-  signal TRIG1   : std_logic_vector(31 downto 0);
-  signal TRIG2   : std_logic_vector(31 downto 0);
-  signal TRIG3   : std_logic_vector(31 downto 0);
+--  signal CONTROL : std_logic_vector(35 downto 0);
+--  signal CLK     : std_logic;
+--  signal TRIG0   : std_logic_vector(31 downto 0);
+--  signal TRIG1   : std_logic_vector(31 downto 0);
+--  signal TRIG2   : std_logic_vector(31 downto 0);
+--  signal TRIG3   : std_logic_vector(31 downto 0);
 
 
   component spec_serial_dac_arb
@@ -334,7 +334,14 @@ component chipscope_ila
   constant c_VIC_VECTOR_TABLE : t_wishbone_address_array(0 to 0) :=
     (0 => x"00080000");
   
-  signal uart_dummy_i : std_logic;
+  signal uart_dummy_i 	: std_logic;
+  signal uart_dummy_o 	: std_logic;
+  signal dbg_uart_rxd_i	: std_logic;
+  signal dbg_uart_txd_o	: std_logic;
+  signal wrpc_uart_rxd_i: std_logic;
+  signal wrpc_uart_txd_o: std_logic;
+  signal sg_uart_rxd_i	: std_logic;
+  signal sg_uart_txd_o	: std_logic;
 
   signal pllout_clk_sys       : std_logic;
   signal pllout_clk_dmtd      : std_logic;
@@ -419,8 +426,8 @@ component chipscope_ila
   signal periph_slave_o : t_wishbone_slave_out_array(0 to 2);
   signal periph_dummy	: std_logic_vector (9 downto 0);
   signal wrpc_dummy		: std_logic_vector (2 downto 0);
-  signal forced_lm32_reset_n : std_logic;
-  signal state_control : std_logic_vector (2 downto 0) := "000";
+  signal forced_lm32_reset_n : std_logic := '0';
+  signal state_control : unsigned (11 downto 0) := x"fff";
 
   attribute buffer_type                    : string;  --" {bufgdll | ibufg | bufgp | ibuf | bufr | none}";
   attribute buffer_type of clk_125m_pllref : signal is "BUFG";
@@ -429,14 +436,27 @@ begin
 
 LED_RED <= forced_lm32_reset_n;
 
-manage_reset : process (clk_sys)
+sg_uart_rxd_i <= uart_rxd_i;
+uart_txd_o <= sg_uart_txd_o;
+
+managed_reset : process (clk_sys)
+	variable use_dbg_uart: std_logic := '1';
 	begin 
 		if (rising_edge(clk_sys)) then
-			state_control(0) <= not BUTTON2_I;
-			state_control(1) <=  state_control(0);
-			state_control(2) <=  state_control(1);
-			if ( (state_control(0) or state_control(1) or state_control(2)) = '1') then
-				forced_lm32_reset_n <= not forced_lm32_reset_n;
+			if (BUTTON2_I = '0') then
+				state_control <= state_control + 1;
+			else
+				if ((state_control /= x"000") and (state_control <= x"005")) then
+					state_control <= x"000";
+					forced_lm32_reset_n <= not forced_lm32_reset_n;
+				elsif (state_control >= x"005") then
+					state_control <= x"000";
+					case use_dbg_uart is
+						when use_dbg_uart => uart_txd_o <= dbg_uart_txd_o; dbg_uart_rxd_i <= uart_rxd_i;
+						when others => uart_txd_o <= wrpc_uart_txd_o; wrpc_uart_rxd_i <= uart_rxd_i;
+						end case; 
+					use_dbg_uart := '0';
+				end if;
 			end if;
 		end if;
 	end process;
@@ -477,8 +497,8 @@ manage_reset : process (clk_sys)
       slave_i => periph_slave_i,
       slave_o => periph_slave_o,
 
-      uart_rxd_i => uart_rxd_i,
-      uart_txd_o => uart_txd_o,
+      uart_rxd_i => dbg_uart_rxd_i,
+      uart_txd_o => dbg_uart_txd_o,
 
       owr_pwren_o => open,
       owr_en_o    => open,
@@ -487,8 +507,8 @@ manage_reset : process (clk_sys)
 --  
   periph_slave_i(1) <= cnx_master_out(c_SLAVE_UART);
   cnx_master_in(c_SLAVE_UART) <= periph_slave_o(1);
-  trig2 <= cnx_master_out(c_SLAVE_UART).adr;
-  trig3 <=  cnx_master_in(c_SLAVE_UART).dat;
+--  trig2 <= cnx_master_out(c_SLAVE_UART).adr;
+--  trig3 <=  cnx_master_in(c_SLAVE_UART).dat;
 
   --------------------------------------
   -- UART
@@ -644,7 +664,7 @@ manage_reset : process (clk_sys)
 		--trig2 <= cnx_master_out(c_SLAVE_FD).adr;
 --		trig1(0) <= cnx_master_in(c_SLAVE_DPRAM).ack;
 --		trig1(1) <= cnx_master_out(c_SLAVE_DPRAM).we; 
-		trig1 <= cnx_slave_in(c_MASTER_LM32).dat;
+--		trig1 <= cnx_slave_in(c_MASTER_LM32).dat;
 		--trig3 <= cnx_master_out(c_SLAVE_FD).dat;
 --		trig3 <= cnx_slave_out(c_MASTER_LM32).dat;
 ---------------------------------------------------------------------------
@@ -804,18 +824,18 @@ manage_reset : process (clk_sys)
   wrc_owr_in(0)     <= carrier_onewire_b;
   
   
-  chipscope_ila_1 : chipscope_ila
-    port map (
-      CONTROL => CONTROL,
-      CLK     => clk_sys,
-      TRIG0   => TRIG0,
-      TRIG1   => TRIG1,
-      TRIG2   => TRIG2,
-      TRIG3   => TRIG3);
-
-  chipscope_icon_1 : chipscope_icon
-    port map (
-      CONTROL0 => CONTROL);
+--  chipscope_ila_1 : chipscope_ila
+--    port map (
+--      CONTROL => CONTROL,
+--      CLK     => clk_sys,
+--      TRIG0   => TRIG0,
+--      TRIG1   => TRIG1,
+--      TRIG2   => TRIG2,
+--      TRIG3   => TRIG3);
+--
+--  chipscope_icon_1 : chipscope_icon
+--    port map (
+--      CONTROL0 => CONTROL);
 
   U_WR_CORE : xwr_core
     generic map (
@@ -872,8 +892,8 @@ manage_reset : process (clk_sys)
 --      uart_rxd_i => uart_rxd_i,
 --      uart_txd_o => uart_txd_o,
 		
-		uart_rxd_i => uart_dummy_i,
-      uart_txd_o => open,
+		uart_rxd_i => wrpc_uart_rxd_i,
+      uart_txd_o => wrpc_uart_txd_o,
 
       owr_en_o => wrc_owr_en,
       owr_i    => wrc_owr_in,
