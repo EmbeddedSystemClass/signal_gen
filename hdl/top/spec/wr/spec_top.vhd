@@ -825,11 +825,12 @@ manage_reset : process (clk_sys)
       g_with_external_clock_input => false,
       g_aux_clks                  => 1,
       g_ep_rxbuf_size             => 1024,
-      g_dpram_initf               => "wrc.ram",
+      g_dpram_initf               => "wrc_eth.ram",
       g_dpram_size                => 90112/4,
       g_interface_mode            => PIPELINED,
       g_address_granularity       => BYTE,
-      g_softpll_enable_debugger   => false)
+      g_softpll_enable_debugger   => false,
+		g_aux_sdb						 => c_etherbone_sdb)
     port map (
       clk_sys_i    => clk_sys,
       clk_dmtd_i   => clk_dmtd,
